@@ -1,0 +1,501 @@
+```{r setup, include=FALSE}
+library(nflverse)    
+library(nflreadr)    
+library(dplyr)
+library(tidyr)
+library(nflfastR)
+library(ggplot2)
+library(GGally)
+library(ggrepel)
+```
+Trying to predict a superbowl winner using NFL stats from the 2025 season
+
+Step 1: adding a win column to 2025 dataset.
+```{r warning=FALSE}
+ other_dataset <- load_schedules(2025) %>% 
+  filter(week <= 18) %>% 
+  select(season, week, home_team, away_team, home_score, away_score)
+
+ win_condition <- other_dataset %>% 
+   pivot_longer(
+    cols = c(home_team, away_team),
+    names_to = "home_away",
+    values_to = "team"
+  ) %>% 
+  mutate(
+    win = case_when(
+      home_away == "home_team" & home_score > away_score ~ 1,
+      home_away == "away_team" & away_score > home_score ~ 1,
+      TRUE ~ 0
+    )
+  ) %>% 
+  select(season, week, team, win)
+
+
+NFL_full_stats <- load_team_stats(2025) %>% 
+  left_join(win_condition, by = c("season", "week", "team")) %>% 
+  relocate(win, .after = "team")
+
+```
+
+
+Step 2: creating a dataset strictly with 2025 nfl playoff teams and optimizing variables
+```{r warning=FALSE}
+NFL_2025_team_stats <- NFL_full_stats %>%
+  filter(season_type == "REG") %>% 
+  mutate(comp_perc = completions/attempts, 
+  turnovers = passing_interceptions + sack_fumbles_lost + rushing_fumbles_lost + receiving_fumbles_lost,
+  forced_turnovers = def_interceptions + fumble_recovery_opp,
+  rypa = rushing_yards / carries, ##rypa = rushing yards per attempt
+  total_tackles = def_tackles_solo + def_tackles_with_assist + def_tackle_assists) %>% 
+  select(season, week, team, opponent_team, comp_perc, passing_yards, passing_tds, sacks_suffered,        turnovers, forced_turnovers, rypa, rushing_tds, rushing_epa, passing_epa, receiving_epa,                total_tackles, def_tackles_for_loss, def_sacks, def_qb_hits, def_pass_defended, penalties,              penalty_yards, fg_pct, win)
+
+playoffteams <- c("BUF", "CAR", "SEA", "LA", "LAC", "PIT", "NE", "DEN", "JAX", "HOU", "SF", "GB", "PHI", "CHI")
+
+NFL_2025_playoff_teams <- NFL_2025_team_stats %>% 
+  filter(team %in% playoffteams)
+
+```
+**I took the playoff teams of 2025 and filtered all of their 17 games of the season while adding parameters that I think will be usefully in predicting playoff success.**
+
+Step 3: only including the variables I think are the most important to winning and losing football games, while also finding average of this variables from all 14 playoff teams to use as a benchmark later on. 
+```{r warning=FALSE}
+
+avg_benchmark_playoff_teams <- NFL_2025_playoff_teams %>% 
+  select(-"season", -"week") %>% 
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+avg_benchmark_teams <- NFL_2025_team_stats %>% 
+  select(-"season", -"week") %>% 
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+```
+**I selected all of the parameters I think will be the most impactful so that I can average them over the season and starting using statistical methods.**
+
+Step 4: Finding the average on every variable for each specific team over the 2025 season. 
+```{r warning=FALSE}
+per_by_playoff_team_average <- NFL_2025_playoff_teams %>% 
+  group_by(team) %>% 
+  select(-season, -week) %>% 
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+per_by_team_average <- NFL_2025_team_stats  %>% 
+  group_by(team) %>% 
+  select(-season, -week) %>% 
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+```
+**this gives me season averages of every playoff team**
+
+Step 5: Turnover vs Win and Forced turnovers vs Win graphs for Playoff teams and rest of league.
+```{r warning=FALSE}
+turnover_to_win_playoff <- ggplot(per_by_playoff_team_average, aes(x = turnovers, y = win, label = team)) +
+  geom_point() +   
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "Playoff Teams: Turnovers vs Win percentage",
+       x = "Turnovers",
+       y = "Win percentage")
+
+turnover_to_win <- ggplot(per_by_team_average, aes(x = turnovers, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "ALL NFL Teams: Turnovers vs Win percentage",
+       x = "Turnovers",
+       y = "Win percentage")
+
+turnover_to_win_playoff
+turnover_to_win
+
+forced_turnover_to_win_playoff <- ggplot(per_by_playoff_team_average, aes(x = forced_turnovers, y = win, label = team)) +
+  geom_point() +   
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "Playoff Teams: Forced Turnovers vs Win percentage",
+       x = "Turnovers",
+       y = "Win percentage")
+
+forced_turnover_to_win <- ggplot(per_by_team_average, aes(x = forced_turnovers, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "All NFL Teams: Forced Turnovers vs Win percentage",
+       x = "Turnovers",
+       y = "Win percentage")
+
+forced_turnover_to_win_playoff
+forced_turnover_to_win
+
+```
+
+Step 6: more graphs
+```{r warning=TRUE}
+playoff_Tackles_for_loss <- ggplot(per_by_playoff_team_average, aes(x = def_tackles_for_loss, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "Playoff Teams: Tackles for loss vs Win percentage",
+       x = "TFL",
+       y = "Win percentage")
+
+Tackles_for_loss <- ggplot(per_by_team_average, aes(x = def_tackles_for_loss, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "All NFL Teams: Tackles for loss vs Win percentage",
+       x = "TFL",
+       y = "Win percentage")
+
+Tackles_for_loss
+playoff_Tackles_for_loss
+
+```
+
+
+```{r warning=TRUE}
+playoff_penalties <- ggplot(per_by_playoff_team_average, aes(x = penalties, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "Playoff Teams: Penalties vs Win percentage",
+       x = "Penalties",
+       y = "Win percentage")
+
+penalties <- ggplot(per_by_team_average, aes(x = penalties, y = win, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(se = FALSE, color = "blue") +
+  theme_minimal() +
+  labs(title = "All NFL Teams: Penalties vs Win percentage",
+       x = "Penalties",
+       y = "Win percentage")
+
+playoff_penalties
+penalties
+```
+
+Step 7: Creating a strength variable to use for the modeling
+```{r}
+logit_model_1 <- glm(
+  win ~ sacks_suffered + turnovers + forced_turnovers +  rushing_epa + passing_epa + def_tackles_for_loss + def_sacks + penalties,
+  data = NFL_2025_playoff_teams,
+  family = binomial
+)
+
+summary(logit_model_1)
+
+NFL_2025_playoff_teams$win_pct <- NFL_2025_playoff_teams$win
+
+NFL_2025_playoff_teams$win_pct <- predict(logit_model_1, type = "response")
+
+
+team_strength <- NFL_2025_playoff_teams %>%
+  group_by(team) %>%
+  summarise(
+    strength = mean(win_pct, na.rm = TRUE),
+    win_pct = mean(win),
+    wins = sum(win)
+  ) %>%
+  arrange(desc(strength))
+```
+
+Step 8: Creating the sim and running the wild card round to determine the divisional round
+```{r}
+sim_game <- function(team_a, team_b, team_strength) {
+  prob_a = team_strength$strength[team_strength$team == team_a]
+  prob_b = team_strength$strength[team_strength$team == team_b]
+  
+  win_prob_a = ((prob_a) - (prob_a * prob_b))/((prob_a + prob_b) - (2 * (prob_a * prob_b)))
+  
+  if (runif(1) < win_prob_a) return(team_a) else return(team_b)
+}
+
+  runsim_wc <- function(team_strength) {
+    afc_wc1 <- sim_game("NE", "LAC", team_strength)
+    afc_wc2 <- sim_game("JAX", "BUF", team_strength)
+    afc_wc3 <- sim_game("HOU", "PIT", team_strength)
+    
+    nfc_wc1 <- sim_game("CHI", "GB", team_strength)
+    nfc_wc2 <- sim_game("PHI", "SF", team_strength)
+    nfc_wc3 <- sim_game("LA", "CAR", team_strength)
+    
+    
+    return(c(afc_wc1, afc_wc2, afc_wc3, nfc_wc1, nfc_wc2, nfc_wc3))
+  }
+  
+set.seed(123)
+wc_results <- replicate(10000, runsim_wc(team_strength))
+
+all_wc_winners <- as.vector(wc_results)
+
+wc_odds <- as.data.frame(table(all_wc_winners)) %>% 
+  rename(team = all_wc_winners, wins = Freq) %>%
+  mutate(win_prob = wins / 10000) %>%
+  arrange(desc(win_prob))
+```
+
+Step 9: running the divisional round to determine the championship round
+```{r}
+
+runsim_dv <- function(team_strength) {
+    afc_dv1 <- sim_game("NE", "PIT", team_strength)
+    afc_dv2 <- sim_game("DEN", "BUF", team_strength)
+    
+    nfc_dv1 <- sim_game("CHI", "PHI", team_strength)
+    nfc_dv2 <- sim_game("SEA", "LA", team_strength)
+    
+    
+    return(c(afc_dv1, afc_dv2, nfc_dv1, nfc_dv2))
+  }
+  
+set.seed(123)
+dv_results <- replicate(10000, runsim_dv(team_strength))
+
+all_dv_winners <- as.vector(dv_results)
+
+dv_odds <- as.data.frame(table(all_dv_winners)) %>% 
+  rename(team = all_dv_winners, wins = Freq) %>%
+  mutate(win_prob = wins / 10000) %>%
+  arrange(desc(win_prob))
+```
+
+Step 10: running the championship games to determine the superbowl
+```{r}
+
+runsim_ch <- function(team_strength) {
+    afc_ch <- sim_game("NE", "DEN", team_strength)
+    nfc_ch <- sim_game("LA", "CHI", team_strength)
+   
+    return(c(afc_ch, nfc_ch))
+  }
+  
+set.seed(123)
+ch_results <- replicate(10000, runsim_ch(team_strength))
+
+all_ch_winners <- as.vector(ch_results)
+
+ch_odds <- as.data.frame(table(all_ch_winners)) %>% 
+  rename(team = all_ch_winners, wins = Freq) %>%
+  mutate(win_prob = wins / 10000) %>%
+  arrange(desc(win_prob))
+```
+
+
+```{r}
+
+runsim_sb <- function(team_strength) {
+    sb <- sim_game("NE", "LA", team_strength)
+   
+    return(c(sb))
+  }
+  
+set.seed(123)
+sb_results <- replicate(10000, runsim_sb(team_strength))
+
+all_sb_winners <- as.vector(sb_results)
+
+sb_odds <- as.data.frame(table(all_sb_winners)) %>% 
+  rename(team = all_sb_winners, wins = Freq) %>%
+  mutate(win_prob = wins / 10000) %>%
+  arrange(desc(win_prob))
+```
+
+Step 11: GRAPHS
+```{r}
+NE_LAC <- wc_odds %>% 
+  filter(team %in% c("NE", "LAC")) 
+
+afc_wc1_chart <- ggplot(NE_LAC, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("LAC" = "yellow", "NE" = "red")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_wc1_chart
+```
+
+```{r}
+JAX_BUF <- wc_odds %>% 
+  filter(team %in% c("JAX", "BUF")) 
+
+afc_wc2_chart <- ggplot(JAX_BUF, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("JAX" = "green", "BUF" = "blue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_wc2_chart
+```
+
+```{r}
+PIT_HOU <- wc_odds %>% 
+  filter(team %in% c("PIT", "HOU")) 
+
+afc_wc3_chart <- ggplot(PIT_HOU, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("PIT" = "black", "HOU" = "red")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_wc3_chart
+```
+
+```{r}
+CHI_GB <- wc_odds %>% 
+  filter(team %in% c("CHI", "GB")) 
+
+nfc_wc1_chart <- ggplot(CHI_GB, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("CHI" = "navy", "GB" = "forestgreen")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_wc1_chart
+```
+
+```{r}
+PHI_SF <- wc_odds %>% 
+  filter(team %in% c("PHI", "SF")) 
+
+nfc_wc2_chart <- ggplot(PHI_SF, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("PHI" = "#004C54", "SF" = "gold")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_wc2_chart
+```
+
+```{r}
+LA_CAR <- wc_odds %>% 
+  filter(team %in% c("LA", "CAR")) 
+
+nfc_wc3_chart <- ggplot(LA_CAR, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("LA" = "yellow", "Car" = "steelblue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_wc3_chart
+```
+
+```{r}
+NE_PIT <- dv_odds %>% 
+  filter(team %in% c("NE", "PIT")) 
+
+afc_dv1_chart <- ggplot(NE_PIT, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("NE" = "blue", "PIT" = "black")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_dv1_chart
+```
+
+```{r}
+DEN_BUF <- dv_odds %>% 
+  filter(team %in% c("DEN", "BUF")) 
+
+afc_dv2_chart <- ggplot(DEN_BUF, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("DEN" = "orange", "BUF" = "blue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_dv2_chart
+```
+
+```{r}
+CHI_PHI <- dv_odds %>% 
+  filter(team %in% c("CHI", "PHI")) 
+
+nfc_dv1_chart <- ggplot(CHI_PHI, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("CHI" = "navy", "PHI" = "#004C54")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_dv1_chart
+```
+
+```{r}
+LA_SEA <- dv_odds %>% 
+  filter(team %in% c("LA", "SEA")) 
+
+nfc_dv2_chart <- ggplot(LA_SEA, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("LA" = "yellow", "SEA" = "darkblue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_dv2_chart
+```
+
+```{r}
+DEN_NE <- ch_odds %>% 
+  filter(team %in% c("DEN", "NE")) 
+
+afc_ch_chart <- ggplot(DEN_NE, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("DEN" = "orange", "NE" = "blue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+afc_ch_chart
+```
+
+```{r}
+LA_CHI <- ch_odds %>% 
+  filter(team %in% c("LA", "CHI")) 
+
+nfc_ch_chart <- ggplot(LA_CHI, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("LA" = "yellow", "CHI" = "navy")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+nfc_ch_chart
+```
+
+```{r}
+sb_chart <- ggplot(sb_odds, aes(x = team, y = win_prob, fill = team)) +
+  geom_col() +
+  geom_label(aes(label = win_prob, accuracy = 0.1),color = "black", fill = "white") +
+  scale_fill_manual(values = c("LA" = "yellow", "NE" = "blue")) +
+  labs(title = "Wild Card Predictions",
+       y = "Win Probability",
+       x = "Teams")
+  
+sb_chart
