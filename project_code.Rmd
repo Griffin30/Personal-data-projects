@@ -1,0 +1,165 @@
+---
+title: "Thunder Project"
+author: "Griffin Salyer"
+date: "2026-09-17"
+output: html_document
+---
+
+**Name: Griffin Salyer | Number: 9918**
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'C:/Users/griff/Downloads/Thunder Training Data')
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyverse)
+library(lightgbm)
+library(pROC)
+```
+
+
+```{r}
+train_df <- read_csv("training.csv.gz")
+test_df  <- read_csv("testing.csv.gz")
+
+combined_df <- bind_rows(
+  train_df %>% mutate(is_train = 1),
+  test_df %>% mutate(is_train = 0, outcome = NA)
+)
+
+combined_model_df <- combined_df %>% 
+  mutate(
+    approach_num = map(closestdefapproach, ~ as.numeric(str_extract_all(.x, "[0-9.]+")[[1]]))
+  ) %>%
+  unnest_wider(approach_num, names_sep = "_") %>%
+  rename(
+    def_dist_1s   = approach_num_1,
+    def_dist_075s = approach_num_2,
+    def_dist_05s  = approach_num_3,
+    def_dist_025s = approach_num_4
+  ) %>%
+  mutate(
+    contested = as.integer(contested),
+    outcome = as.integer(outcome),
+  shot_angle = atan2(locationy, locationx - (-41.75)),
+  def_closing_speed = (def_dist_1s - def_dist_025s) / 0.75, 
+  
+  three = as.integer(three)) %>% 
+  mutate(across(c(shottype, gamestate, month), as.factor))
+
+full_train <- combined_model_df %>% filter(is_train == 1)
+test_clean  <- combined_model_df %>% filter(is_train == 0)
+```
+
+
+```{r}
+set.seed(42)
+val_idx <- sample(seq_len(nrow(full_train)), size = 0.2 * nrow(full_train))
+
+train_data <- full_train[-val_idx, ]
+val_data   <- full_train[val_idx, ]
+
+logit_model <- glm(
+  outcome ~ num_contesters + contested + distance + shot_angle + three + gamestate + shottype + shotclock + dribblesbefore + closestdefdist + shooterspeed + def_closing_speed + def_dist_025s,
+  data = train_data,
+  family = binomial(link = "logit")
+)
+
+summary(logit_model)
+
+val_data$pred_logit <- predict(logit_model, newdata = val_data, type = "response")
+```
+
+
+```{r}
+feature_cols <- c(
+  "shot_angle", "locationx", "locationy", "three",
+  "dribblesbefore", "shotclock", "shooterspeed", "closestdefdist",
+  "def_closing_speed", "num_contesters", "contested", "shottype", 
+  "gamestate", "shooter_id", "def_team_id", "off_team_id", "distance", "def_dist_025s"
+)
+
+dtrain_split <- lgb.Dataset(
+  data = data.matrix(train_data[, feature_cols]),
+  label = train_data$outcome,
+  categorical_feature = c("shottype", "gamestate", "shooter_id", "def_team_id", "off_team_id")
+)
+
+params <- list(
+  objective = "binary",
+  metric = "binary_logloss",
+  boosting = "gbdt",
+  learning_rate = 0.05,
+  num_leaves = 31,
+  max_depth = 6,
+  feature_fraction = 0.8,
+  min_data_in_leaf = 50
+)
+
+cv_model <- lgb.cv(
+  params = params,
+  data = dtrain_split,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 50,
+  verbose = 0
+)
+
+final_lgb <- lgb.train(
+  params = params,
+  data = dtrain_split,
+  nrounds = cv_model$best_iter
+)
+
+test_preds <- predict(final_lgb, data.matrix(test_clean[, feature_cols]))
+
+calc_log_loss <- function(actual, pred) {
+  eps <- 1e-15
+  pred <- pmax(pmin(pred, 1 - eps), eps)
+  -mean(actual * log(pred) + (1 - actual) * log(1 - pred))
+}
+
+loss_logit <- calc_log_loss(val_data$outcome, val_data$pred_logit)
+loss_gbm   <- calc_log_loss(val_data$outcome, val_data$pred_gbm)
+
+auc_logit <- auc(val_data$outcome, val_data$pred_logit)
+auc_gbm   <- auc(val_data$outcome, val_data$pred_gbm)
+
+comparison_df <- data.frame(
+  Model = c("Logistic Regression", "LightGBM"),
+  Log_Loss = c(loss_logit, loss_gbm),
+  ROC_AUC = c(auc_logit, auc_gbm)
+)
+print(comparison_df)
+
+threshold <- 0.5
+
+val_data <- val_data %>%
+  mutate(
+    class_logit = if_else(pred_logit >= threshold, 1, 0),
+    class_gbm   = if_else(pred_gbm >= threshold, 1, 0)
+  )
+
+acc_logit <- mean(val_data$class_logit == val_data$outcome)
+acc_gbm   <- mean(val_data$class_gbm == val_data$outcome)
+
+accuracy_df <- data.frame(
+  Model = c("Logistic Regression", "LightGBM"),
+  Log_Loss = c(loss_logit, loss_gbm),
+  ROC_AUC = c(auc_logit, auc_gbm),
+  Accuracy = c(acc_logit, acc_gbm)
+)
+
+print(accuracy_df)
+
+```
+
+
+```{r}
+submission <- test_clean %>%
+  select(shot_id) %>%
+  mutate(make_prob = test_preds)
+
+write.csv(submission, "griffin_submission.csv")
+```
+
